@@ -146,7 +146,7 @@ function available_version(y::Yum)
     found_uname = false
     found_version = false
     for l in eachline(`yum info $(y.package)`)
-        l = chomp(l)
+        VERSION < v"0.6" && (l = chomp(l))
         if !found_uname
             # On 64-bit systems, we may have multiple arches installed
             # this makes sure we get the right one
@@ -208,7 +208,7 @@ function available_version(z::Zypper)
     ENV2 = copy(ENV)
     ENV2["LC_ALL"] = "C"
     for l in eachline(setenv(`zypper info $(z.package)`, ENV2))
-        l = chomp(l)
+        VERSION < v"0.6" && (l = chomp(l))
         if !found_uname
             found_uname = endswith(l, uname)
             continue
@@ -313,6 +313,53 @@ function provides{T}(::Type{T},providers::Dict; opts...)
     end
 end
 
+const have_sonames = Ref(false)
+const sonames = Dict{String,String}()
+reread_sonames() = (empty!(sonames); have_sonames[] = false; nothing)
+
+if is_windows() || is_apple()
+    function read_sonames()
+        have_sonames[] = true
+    end
+elseif is_linux()
+    let ldconfig_arch = Dict(:i686 => "x32",
+                             :x86_64 => "x86-64",
+                             :aarch64 => "AArch64"),
+        arch = get(ldconfig_arch, Sys.ARCH, ""),
+        fmt = Regex("^\\s+(\\S+)\\.so\\S+ \\([^)]*$arch[^)]*\\) => (.+)\$")
+    global function read_sonames()
+        empty!(sonames)
+        for line in eachline(`/sbin/ldconfig -p`)
+            VERSION < v"0.6" && (line = chomp(line))
+            m = match(fmt, line)
+            if m !== nothing
+                sonames[m[1]] = m[2]
+            end
+        end
+        have_sonames[] = true
+    end
+    end
+else
+    let fmt = Regex("^\\s:-l(\\S+)\\.\\S+\\s(.+)\$")
+    global function read_sonames()
+        empty!(sonames)
+        for line in eachline(`/sbin/ldconfig -r`)
+            VERSION < v"0.6" && (line = chomp(line))
+            m = match(fmt, line)
+            if m !== nothing
+                sonames["lib" * m[1]] = m[2]
+            end
+        end
+        have_sonames[] = true
+    end
+    end
+end
+
+lookup_soname(s) = lookup_soname(String(s))
+function lookup_soname(s::String)
+    have_sonames[] || read_sonames()
+    return get(sonames, s, "")
+end
 
 generate_steps(h::DependencyProvider,dep::LibraryDependency) = error("Must also pass provider options")
 generate_steps(h::BuildProcess,dep::LibraryDependency,opts) = h.steps
@@ -324,7 +371,6 @@ function generate_steps(dep::LibraryDependency,h::AptGet,opts)
     @build_steps begin
         println("Installing dependency $(h.package) via `sudo apt-get install $(h.package)`:")
         `sudo apt-get install $(h.package)`
-        ()->(ccall(:jl_read_sonames,Void,()))
     end
 end
 function generate_steps(dep::LibraryDependency,h::Yum,opts)
@@ -336,7 +382,7 @@ function generate_steps(dep::LibraryDependency,h::Yum,opts)
     @build_steps begin
         println("Installing dependency $(h.package) via `sudo yum install $(h.package)`:")
         `sudo yum install $(h.package)`
-        ()->(ccall(:jl_read_sonames,Void,()))
+        reread_sonames
     end
 end
 function generate_steps(dep::LibraryDependency,h::Pacman,opts)
@@ -347,7 +393,7 @@ function generate_steps(dep::LibraryDependency,h::Pacman,opts)
     @build_steps begin
         println("Installing dependency $(h.package) via `sudo pacman -S --needed $(h.package)`:")
         `sudo pacman -S --needed $(h.package)`
-        ()->(ccall(:jl_read_sonames,Void,()))
+        reread_sonames
     end
 end
 function generate_steps(dep::LibraryDependency,h::Zypper,opts)
@@ -358,7 +404,7 @@ function generate_steps(dep::LibraryDependency,h::Zypper,opts)
     @build_steps begin
         println("Installing dependency $(h.package) via `sudo zypper install $(h.package)`:")
         `sudo zypper install $(h.package)`
-        ()->(ccall(:jl_read_sonames,Void,()))
+        reread_sonames
     end
 end
 function generate_steps(dep::LibraryDependency,h::NetworkSource,opts)
@@ -549,8 +595,8 @@ function _find_library(dep::LibraryDependency; provider = Any)
             check_path!(ret,dep,opath)
         end
         @static if is_linux()
-            soname = ccall(:jl_lookup_soname, Ptr{UInt8}, (Ptr{UInt8}, Csize_t), lib, sizeof(lib))
-            soname != C_NULL && check_path!(ret,dep,unsafe_string(soname))
+            soname = lookup_soname(lib)
+            isempty(soname) || check_path!(ret,dep,soname)
         end
     end
     return ret
@@ -1043,8 +1089,8 @@ using SHA
 function sha_check(path, sha)
     open(path) do f
         calc_sha = sha256(f)
-	# Workaround for SHA.jl API change.  Safe to remove once SHA versions
-	# < v0.2.0 are rare, e.g. when Julia v0.4 is deprecated.
+        # Workaround for SHA.jl API change.  Safe to remove once SHA versions
+        # < v0.2.0 are rare, e.g. when Julia v0.4 is deprecated.
         if !isa(calc_sha, AbstractString)
             calc_sha = bytes2hex(calc_sha)
         end
