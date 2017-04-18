@@ -326,7 +326,7 @@ elseif is_linux()
                              :x86_64 => "x86-64",
                              :aarch64 => "AArch64"),
         arch = get(ldconfig_arch, Sys.ARCH, ""),
-        fmt = Regex("^\\s+(\\S+)\\.so\\S+ \\([^)]*$arch[^)]*\\) => (.+)\$")
+        fmt = Regex("^\\s+([^ ]+)\\.so[^ ]* \\([^)]*$arch[^)]*\\) => (.+)\$")
     global function read_sonames()
         empty!(sonames)
         for line in eachline(`/sbin/ldconfig -p`)
@@ -340,7 +340,7 @@ elseif is_linux()
     end
     end
 else
-    let fmt = Regex("^\\s:-l(\\S+)\\.\\S+\\s(.+)\$")
+    let fmt = Regex("^\\s+\\d+:-l([^ ]+)\\.[^. ]+ => (.+)\$")
     global function read_sonames()
         empty!(sonames)
         for line in eachline(`/sbin/ldconfig -r`)
