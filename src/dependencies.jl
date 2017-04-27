@@ -322,38 +322,46 @@ if is_windows() || is_apple()
         have_sonames[] = true
     end
 elseif is_linux()
-    let ldconfig_arch = Dict(:i686 => "x32",
+    let ldconfig_arch = Dict(:i386 => "x32",
+                             :i387 => "x32",
+                             :i486 => "x32",
+                             :i586 => "x32",
+                             :i686 => "x32",
                              :x86_64 => "x86-64",
                              :aarch64 => "AArch64"),
         arch = get(ldconfig_arch, Sys.ARCH, ""),
-        fmt = Regex("^\\s+([^ ]+)\\.so[^ ]* \\([^)]*$arch[^)]*\\) => (.+)\$")
+        arch_wrong = filter!(x -> (x != arch), ["x32", "x86-64", "AArch64", "soft-float"])
     global read_sonames
     function read_sonames()
         empty!(sonames)
         for line in eachline(`/sbin/ldconfig -p`)
             VERSION < v"0.6" && (line = chomp(line))
-            m = match(fmt, line)
+            m = match(r"^\s+([^ ]+)\.so[^ ]* \(([^)]*)\) => (.+)$", line)
             if m !== nothing
-                sonames[m[1]] = m[2]
+                desc = m[2]
+                if Sys.WORD_SIZE != 32 && !isempty(arch)
+                    contains(desc, arch) || continue
+                end
+                for wrong in arch_wrong
+                    contains(desc, wrong) && continue
+                end
+                sonames[m[1]] = m[3]
             end
         end
         have_sonames[] = true
     end
     end
 else
-    let fmt = Regex("^\\s+\\d+:-l([^ ]+)\\.[^. ]+ => (.+)\$")
-    global read_sonames
     function read_sonames()
         empty!(sonames)
         for line in eachline(`/sbin/ldconfig -r`)
             VERSION < v"0.6" && (line = chomp(line))
-            m = match(fmt, line)
+            m = match(r"^\s+\d+:-l([^ ]+)\.[^. ]+ => (.+)$", line)
             if m !== nothing
                 sonames["lib" * m[1]] = m[2]
             end
         end
         have_sonames[] = true
-    end
     end
 end
 
